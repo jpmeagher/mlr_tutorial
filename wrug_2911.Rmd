@@ -1,0 +1,383 @@
+---
+title: "Machine Learning in R: mlr"
+author: "J.P. Meagher"
+date: "29 November 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = F, warning = F)
+```
+
+The package `mlr` provides an easy to use toolbox for executing machine learning projects in R.
+
+I was introduced to this package over the summer while working as an intern at the Turing Institute. Using the tools presented here I was able to perform a study assessing the prediction power of a suite of models, in various validation settings, over the course of a few days.
+
+Here I will work through the `mlr` tutorial available at [mlr-org](https://mlr-org.github.io/mlr-tutorial/devel/html/) and hopefully give a flavour of how straightforward Machine Learning can be in R.
+
+---
+
+# Quick Start
+
+The mlr workflow to train, make predictions, and evaluate a learner / model on a classification problem is detailed below.
+
+The dataset used in this demonstration is the `iris` dataset.
+
+```{r quick start: preliminaries}
+library(mlr)
+library(mlbench)
+library(ggplot2)
+data(iris)
+head(iris)
+```
+
+The first step in the workflow is to define the task. Tis involves specifying the type of analysis (classification), providing data (iris dataset) and identifying the response variable (Species).
+
+```{r quick start: task}
+task <-  makeClassifTask(data = iris, target = "Species")
+```
+
+Next, define the learner / model to be used. That is to say, choose a specific class of predictive model (Linear Discriminant Analysis).
+
+```{r quick start: learner}
+lrn <-  makeLearner("classif.lda")
+```
+
+Define a train / test split of the data.
+
+```{r quick start: split}
+n <-  nrow(iris)
+train.set <-  sample(n, size = 2/3*n)
+test.set <-  setdiff(1:n, train.set)
+```
+
+Then fit the learner / model to the training dataset.
+
+```{r quick start: model}
+model <-  train(lrn, task, subset = train.set)
+```
+
+After training the model, make predictions for the response variable for the observations in the testing dataset.
+
+```{r quick start: prediction}
+pred <-  predict(model, task = task, subset = test.set)
+```
+
+The performance of the model can be assessed by comparing the predicted and actual values of the response variable.
+
+```{r quick start: performance}
+performance(pred, measures = list(mmce, acc))
+```
+
+---
+
+# Basics
+
+---
+
+## Learning Tasks
+
+Learning tasks can be thought of as a high level description of the problem. The learning task defines the type of task required (regression, classification, etc.), the dataset being investigated, and the target variable when performing supervised learning tasks.
+
+### Task types and creation
+
+The following tasks can be set up in mlr
+
+* RegrTask for regression problems,
+* ClassifTask for binary and multi-class classification problems (cost-sensitive classification with class-dependent costs can be handled as well),
+* SurvTask for survival analysis,
+* ClusterTask for cluster analysis,
+* MultilabelTask for multilabel classification problems,
+* CostSensTask for general cost-sensitive classification (with example-specific costs).
+
+Tasks are created by calling `make<TaskType>` (e.g. `makeClassifTask`). Details on task creation can be found in the help files called by entering `?makeClassifTask` however there are some points to note.
+
+* All tasks require an identifier (argument `id`) and a data.frame (argument `data`). If no ID is provided it is automatically generated using the variable name of the data. The ID will be later used to name results, for example of benchmark experiments, and to annotate plots.
+* The argument `target` identifies the response variable in supervised learning problems.
+* The argument `blocking` is a factor of identifying the blocking level of the observations. Observations with the same blocking level 'belong together' and are either put all in the training or the test set during a resampling iteration.
+* Once a task has been created, a full description of the task can be accessed by the command `getTaskDesc()`, and various elements of this description can be accessed individually, for example the task id can be accessed by `getTaskId()`. It is also possible to extract data from a task by `getTaskData()`.
+* It is possible to modify an existing task, which may be more convenient than constructing a brand new one from scratch. For example to `dropFeatures` or `normaliseFeatures`.
+
+To illustrate the use of learning tasks I will set up both regression and classification examples.
+
+#### Regression
+
+A regression task can be set up for the `BostonHousing` dataset where the response variable is the median value of owner occupied homes.
+
+```{r task: regression}
+data(BostonHousing, package = "mlbench")
+# ?BostonHousing
+regr.task <-  makeRegrTask(id = "bh", data = BostonHousing, target = "medv")
+regr.task
+```
+
+#### Classification
+
+In a classification problem the target / response variable must be a factor.
+
+Here we have a dataset for which the classification task is to separate out benign and malignant breast cancers. The individual ID variable hast to be stripped out of this analysis to prefent models fitting to it.
+
+```{r task: classification}
+data(BreastCancer, package = "mlbench")
+# ?BreastCancer
+df <-  BreastCancer
+df$Id <-  NULL
+classif.task <-  makeClassifTask(id = "BreastCancer", data = df, target = "Class")
+classif.task
+```
+
+---
+
+## Learners
+
+Learners in `mlr` provide a unified interface to all popular machine learning methods in R. Many are already integrated in mlr, others are not, but the package is specifically designed to make extensions simple.
+
+### Constructing a learner
+
+To construct a learner in `mlr` call `makeLearner`. Within the constructor you specify the method to be used, control hyperparameters, control the output of predictions (probabilities or response for classification), and set an ID to name the object.
+
+```{r make learners}
+#?makeLearner
+## Classification tree, set it up for predicting probabilities
+classif.lrn <- makeLearner("classif.randomForest", predict.type = "prob", fix.factors.prediction = TRUE)
+classif.lrn
+
+## Regression gradient boosting machine, specify hyperparameters via a list
+regr.lrn <- makeLearner("regr.gbm", par.vals = list(n.trees = 500, interaction.depth = 3))
+regr.lrn
+```
+
+Similarly to tasks, aspects of the learner can be accesed such as `getLearnerType()` and learners can be modified without creating a new learner from scratch by commands such as `setHyperPars()`.
+
+It is also possible to list available learners.
+```{r learners: list}
+lrns <-  listLearners()
+```
+
+A list of the most popular learners available in mlr is given [here](https://www.r-bloggers.com/most-popular-learners-in-mlr/).
+
+---
+
+## Training a Learner
+
+Training a learner is nothing more than fitting a model (given by the Learner) to a given dataset (defined by the task). ti is done by applying the `train` function to a perticular learner and a suitable Task.
+
+The function `train` returns an object of class `WrappedModel`, which encapsulates the fitted model, i.e., the output of the underlying R learning method. Additionally, it contains some information about the Learner, the Task, the features and observations used for training, and the training time. A WrappedModel can subsequently be used to make a prediction for new observations.
+
+The fitted model in slot `$learner.model` of the `WrappedModel` object can be accessed using function `getLearnerModel`.
+
+By default, the whole data set in the Task is used for training. The `subset` argument of train takes a logical or integer vector that indicates which observations to use, for example if you want to split your data into a training and a test set or if you want to fit separate models to different subgroups in the data. However,  all standard resampling strategies are supported. Therefore you usually do not have to subset the data yourself.
+
+```{r}
+## Get the number of observations
+n = getTaskSize(bh.task)
+
+## Use 1/3 of the observations for training
+train.set = sample(n, size = n/3)
+
+## Train the learner
+mod = train("regr.lm", bh.task, subset = train.set)
+mod
+```
+
+
+As a final point, you can specify observation `weights` that reflect the relevance of observations in the training process. For example in the BreastCancer data set class `benign` is almost twice as frequent as class malignant. In order to grant both classes equal importance in training the classifier we can weight the examples according to the inverse class frequencies in the data set as shown in the following R code.
+
+```{r}
+## Calculate the observation weights
+target = getTaskTargets(bc.task)
+tab = as.numeric(table(target))
+w = 1/tab[target]
+
+train("classif.rpart", task = bc.task, weights = w)
+```
+
+---
+
+## Predicting Outcomes for New Data
+
+Simply call `predict` on the object returned by `train` and pass the data you want to make predictions for. There are two ways to pass the data:
+
+* either pass the task via the `task` argument, or
+* pass a data.frame via the `newdata` argument.
+
+The predict function also has a `subset` argument for setting aside training and testing portions of the data in a task.
+
+```{r predict within task}
+n <-  getTaskSize(bh.task)
+train.set <-  seq(1, n, by = 2)
+test.set <-  seq(2, n, by = 2)
+lrn <-  makeLearner("regr.gbm", n.trees = 100)
+mod <-  train(lrn, bh.task, subset = train.set)
+
+task.pred <-  predict(mod, task = bh.task, subset = test.set)
+task.pred
+```
+
+```{r predict outside task}
+n <-  nrow(iris)
+iris.train <-  iris[seq(1, n, by = 2), -5]
+iris.test <-  iris[seq(2, n, by = 2), -5]
+task <-  makeClusterTask(data = iris.train)
+mod <-  train("cluster.kmeans", task)
+
+newdata.pred <-  predict(mod, newdata = iris.test)
+newdata.pred
+```
+
+Once the predictions have been made and the predict object stored then there are commands for accessing various aspects of the object, depending on the underlying model / learner being implemented.
+
+For regression tasks standardised errors can be extracted, in classification tasks prediction probabilities and confusion matrices are accessible, and the decision threshold can be adjusted.
+
+There are also functions which allow the user to plot predictions for particular models witl a single line of code.
+
+```{r prediction plot, fig.cap = "Decision Tree prediction of the species in the iris dataset. xval is the number of cross validation groups and mmce is the mean misclassification error. "}
+lrn <-  makeLearner("classif.rpart", id = "CART")
+plotLearnerPrediction(lrn, task = iris.task)
+```
+
+---
+
+## Performance
+
+The quality of predictions made by a model can be evaluated by calling `performance` on the object produced by `predict`. `mlr` provides measures for all types of learning tasks and these can be explored by `?measures` or
+
+```{r list measures}
+listMeasures('regr')
+listMeasures(bh.task)
+```
+
+Calculating a performance measure is straightforward
+
+```{r calculate performance measure}
+n <-  getTaskSize(bh.task)
+lrn <-  makeLearner("regr.gbm", n.trees = 1000)
+mod <-  train(lrn, task = bh.task, subset = seq(1, n, 2))
+pred <-  predict(mod, task = bh.task, subset = seq(2, n, 2))
+
+performance(pred, measures = list(mse, rmse, mae))
+```
+
+That covers the workflow outlined in the Quick Start section.
+
+---
+
+# Resampling
+
+Resampling strategies such as Cross Validation or Bootstrapping are often used to assess model performance. `mlr` provides a straightforward approach to resampling via the function `makeResampleDesc` and supports
+
+* Cross Validation (`"CV"`)
+* Leave-one-out cross-validation (`"LOO"`)
+* Repeated cross-validation (`"RepCV"`)
+* Out-of-bag bootstrap (`"Bootstrap"`)
+* Subsampling (`"Subsample"`)
+* Holdout (training/test) (`"Holdout"`).
+
+The resampling strategy can then be implemented for a particular task.
+
+```{r implement resampling}
+rdesc <- makeResampleDesc("CV", iters = 3)
+r <- resample("regr.lm", bh.task, rdesc)
+r
+```
+
+Similarly,
+
+```{r classification resampling}
+rdesc <-  makeResampleDesc("Subsample", iters = 5, split = 4/5)
+
+lrn <-  makeLearner("classif.rpart", parms = list(split = "information"))
+
+r <-  resample(lrn, sonar.task, rdesc, measures = list(mmce, fpr, fnr, timetrain))
+r
+
+addRRMeasure(r, list(ber, timepredict))
+```
+
+When performing a resampling, one can save the models fitted to each training set if desired, simply set the argument `models = T`. This can be memory intensive however and if there is specific information required this can be instead accessed by the `extract` argument. a function passed to extract will take only the information needed in the mode and store it in the extract slot.
+
+A final note on Resampling is that Stratification and blocking are straightforward. 
+
+Stratification with respect to a categorical variable ensures that all its values are present in each training and test set in approximately the same proportions as it is present in the original dataset. This is set up by `stratify = T` or `stratify.cols = 'col.name'` in `makeResampledesc`.
+
+Blocking is required when there are subsets of the data that 'belong together' in some sense meaning that for each train test data pair a block is either entirely in the training or the test dataset. This is set up when creating the task.
+
+---
+
+# Benchmark Experiments
+
+Running a benchmarking experiment involves applying one or more models / learnenrs to one or more datasets and then comparing performance. `mlr` makes such experiments relatively straightforward, reducing the experiment to calling the function `benchmark` on a list of learners and a list of tasks. `benchmark` essentially implements a resampling for each combination of learner and task and the performance on each combination can be compared over one or more performance measures.
+
+A small benchmarking study comparing linear discriminant analysis and a classification tree applied to the sonar dataset is performed below.
+
+```{r short benchmarking}
+lrns <-  list(makeLearner("classif.lda"), makeLearner("classif.rpart"))
+
+rdesc <-  makeResampleDesc("Holdout")
+
+bmr <-  benchmark(lrns, sonar.task, rdesc)
+
+bmr
+```
+
+## Memory Constraints
+
+The object produced by `benchmark` contains a lot of information including predictions for each learner / task combination (diabled by `keep.pred = F`) and the full models (disabled by `models = F`), which can be discarded if memory constraints become an issue.
+
+## Reproducible Results
+
+Benchmarking experiments can be made reproducible by setting the random seed at the beginning of the experiment.
+
+## Extending / Merging Experiments
+
+```{r}
+lrns2 <-  list(makeLearner("classif.randomForest"), makeLearner("classif.glmnet"))
+bmr2 <-  benchmark(lrns2, sonar.task, rdesc, show.info = FALSE)
+
+mergeBenchmarkResults(list(bmr, bmr2))
+```
+
+We should be wary of extending benchmarking experiments in this manner however as they will not necessarily have been performed on the same test / training split. To manage this when extending / merging benchmark experiments instead
+
+```{r}
+rin <-  getBMRPredictions(bmr)[[1]][[1]]$instance
+
+bmr3 <-  benchmark(lrns2, sonar.task, rin, show.info = FALSE)
+
+mergeBenchmarkResults(list(bmr, bmr3))
+```
+
+## Analysis and Visualisation
+
+Finally, consider an example benchmarking study comparing 3 classification models / learners applied to 5 separate datasets / tasks. To assess performance we consider the mean misclassification error (mmce), balanced error rate (ber), and the training time (timetrain)
+
+```{r}
+lrns = list(
+  makeLearner("classif.lda", id = "lda"),
+  makeLearner("classif.rpart", id = "rpart"),
+  makeLearner("classif.randomForest", id = "randomForest")
+)
+
+ring.task = convertMLBenchObjToTask("mlbench.ringnorm", n = 600)
+wave.task = convertMLBenchObjToTask("mlbench.waveform", n = 600)
+
+tasks = list(iris.task, sonar.task, pid.task, ring.task, wave.task)
+rdesc = makeResampleDesc("CV", iters = 10)
+meas = list(mmce, ber, timetrain)
+bmr = benchmark(lrns, tasks, rdesc, meas, show.info = FALSE)
+bmr
+```
+
+It would be useful to visualise these results somehow and as seen earier `mlr` can interface with `ggplot2` to do just that.
+
+```{r}
+plotBMRBoxplots(bmr, measure = mmce, style = "violin", pretty.names = FALSE) +
+  aes(color = learner.id) +
+  theme(strip.text.x = element_text(size = 8))
+```
+
+---
+
+# Closing Remarks
+
+Hopefully this has convinced you that `mlr` is an incredibly powerful tool for implementing machine learning in R. This only covers the most basic of introductions to the package and those interested are directed to [mlr-org](https://mlr-org.github.io/mlr-tutorial/devel/html/) for a more comprehensive and up-to-date overview of the package. 
